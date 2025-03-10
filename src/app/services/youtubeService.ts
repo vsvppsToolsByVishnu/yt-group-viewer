@@ -160,12 +160,27 @@ class YouTubeApiService {
       const data = await this.executeRequest(url);
       if (!data || !data.items) return [];
       
-      const results = data.items.map((item: any) => ({
-        id: item.id.channelId,
-        title: item.snippet.title,
-        thumbnailUrl: item.snippet.thumbnails.default.url,
-        description: item.snippet.description
-      }));
+      const results = data.items.map((item: any) => {
+        // Get the highest quality thumbnail available
+        // Order of preference: high > medium > default
+        const thumbnails = item.snippet.thumbnails;
+        let thumbnailUrl = '';
+        
+        if (thumbnails.high) {
+          thumbnailUrl = thumbnails.high.url;
+        } else if (thumbnails.medium) {
+          thumbnailUrl = thumbnails.medium.url;
+        } else {
+          thumbnailUrl = thumbnails.default.url;
+        }
+        
+        return {
+          id: item.id.channelId,
+          title: item.snippet.title,
+          thumbnailUrl: thumbnailUrl,
+          description: item.snippet.description
+        };
+      });
       
       // Cache the results
       try {
@@ -209,10 +224,24 @@ class YouTubeApiService {
       if (!data || !data.items || data.items.length === 0) return null;
       
       const channel = data.items[0];
+      
+      // Get the highest quality thumbnail available
+      // Order of preference: high > medium > default
+      const thumbnails = channel.snippet.thumbnails;
+      let thumbnailUrl = '';
+      
+      if (thumbnails.high) {
+        thumbnailUrl = thumbnails.high.url;
+      } else if (thumbnails.medium) {
+        thumbnailUrl = thumbnails.medium.url;
+      } else {
+        thumbnailUrl = thumbnails.default.url;
+      }
+      
       const result = {
         id: channel.id,
         title: channel.snippet.title,
-        thumbnailUrl: channel.snippet.thumbnails.default.url,
+        thumbnailUrl: thumbnailUrl,
         description: channel.snippet.description
       };
       
@@ -232,81 +261,41 @@ class YouTubeApiService {
   
   // Get channel details by username
   async getChannelByUsername(username: string): Promise<Channel | null> {
-    if (!username) {
-      console.error('Empty username provided');
-      return null;
-    }
+    if (!username) return null;
     
-    // Remove @ symbol if present
-    const cleanUsername = username.startsWith('@') ? username.substring(1) : username;
-    console.log(`Processing username: ${cleanUsername}`);
-    
-    // Check if we have this username cached
-    const cacheKey = `username:${cleanUsername.toLowerCase()}`;
+    // Check cache first
+    const cacheKey = `username:${username}`;
     try {
-      const cachedChannelId = await dbService.getCacheEntry<string>(cacheKey, CACHE_TYPES.USERNAME_TO_ID);
+      const cachedId = await dbService.getCacheEntry<string>(cacheKey, CACHE_TYPES.USERNAME_TO_ID);
       
-      if (cachedChannelId) {
-        console.log(`Found cached channel ID for username: ${cleanUsername}`);
-        return this.getChannelById(cachedChannelId);
+      if (cachedId) {
+        console.log(`Using cached channel ID for username: ${username}`);
+        return this.getChannelById(cachedId);
       }
     } catch (error) {
       console.error('Error checking username cache:', error);
     }
     
+    const url = `${API_BASE_URL}/search?part=snippet&q=${encodeURIComponent('@' + username)}&type=channel&maxResults=1&key=${this.apiKey}`;
+    
     try {
-      // For all username types, search is the most reliable method
-      // The YouTube API doesn't reliably handle @usernames with forUsername
-      const searchTerm = username.startsWith('@') ? username : `@${cleanUsername}`;
-      console.log(`Searching for channel with term: ${searchTerm}`);
-      
-      // Use the search endpoint which works better for usernames
-      const url = `${API_BASE_URL}/search?part=snippet&type=channel&q=${encodeURIComponent(searchTerm)}&maxResults=5&key=${this.apiKey}`;
-      
       const data = await this.executeRequest(url);
+      if (!data || !data.items || data.items.length === 0) return null;
       
-      if (!data || !data.items || data.items.length === 0) {
-        console.log(`No search results for ${searchTerm}`);
-        throw new Error(`No channels found for username: ${username}`);
-      }
+      const channelId = data.items[0].id.channelId;
       
-      // Try to find the best match - look for the username in the title or description
-      let bestMatch = data.items[0]; // Default to first result
-      
-      for (const item of data.items) {
-        const channelTitle = item.snippet.title.toLowerCase();
-        const channelDescription = (item.snippet.description || '').toLowerCase();
-        
-        // Check if the username appears in title or description
-        if (channelTitle.includes(cleanUsername.toLowerCase()) || 
-            channelDescription.includes(cleanUsername.toLowerCase()) ||
-            channelDescription.includes(`@${cleanUsername}`.toLowerCase())) {
-          
-          console.log(`Found likely match: ${item.snippet.title}`);
-          bestMatch = item;
-          break;
-        }
-      }
-      
-      // Get the channel ID from the search result
-      const channelId = bestMatch.id.channelId;
-      
-      // Cache the username to channel ID mapping
+      // Cache the channel ID by username
       try {
         await dbService.setCacheEntry(cacheKey, channelId, CACHE_TYPES.USERNAME_TO_ID);
       } catch (cacheError) {
-        console.error('Error caching username mapping:', cacheError);
+        console.error('Error caching username to ID mapping:', cacheError);
       }
       
-      // Get full channel details using the channel ID
-      return await this.getChannelById(channelId);
+      // Now get the full channel details
+      return this.getChannelById(channelId);
     } catch (error) {
-      console.error('Error in getChannelByUsername:', error);
-      if (error instanceof Error) {
-        throw error; // Rethrow the existing error
-      } else {
-        throw new Error(`Error getting channel by username: ${JSON.stringify(error)}`);
-      }
+      console.error('Error getting channel by username:', error);
+      throw error;
     }
   }
   
@@ -357,10 +346,27 @@ class YouTubeApiService {
           item.contentDetails.videoId === video.id
         );
         
+        // Get the highest quality thumbnail available
+        // Order of preference: maxres > high > standard > medium > default
+        const thumbnails = video.snippet.thumbnails;
+        let thumbnailUrl = '';
+        
+        if (thumbnails.maxres) {
+          thumbnailUrl = thumbnails.maxres.url;
+        } else if (thumbnails.high) {
+          thumbnailUrl = thumbnails.high.url;
+        } else if (thumbnails.standard) {
+          thumbnailUrl = thumbnails.standard.url;
+        } else if (thumbnails.medium) {
+          thumbnailUrl = thumbnails.medium.url;
+        } else {
+          thumbnailUrl = thumbnails.default.url;
+        }
+        
         return {
           id: video.id,
           title: video.snippet.title,
-          thumbnailUrl: video.snippet.thumbnails.medium.url,
+          thumbnailUrl: thumbnailUrl,
           channelId: video.snippet.channelId,
           channelTitle: video.snippet.channelTitle,
           publishedAt: video.snippet.publishedAt,
@@ -479,75 +485,52 @@ class YouTubeApiService {
           console.log(`Found channel ID in URL: ${channelId}`);
         }
       }
-      // Handle username URLs (youtube.com/@username)
-      else if (urlObj.pathname.includes('/@')) {
-        try {
-          const username = urlObj.pathname.split('/@')[1].split('/')[0];
-          console.log(`Found @username format: ${username}`);
-          
-          // First check if we can get a channel directly using search
-          const channel = await this.getChannelByUsername(username);
-          
-          if (channel && channel.id) {
-            console.log(`Successfully found channel ID: ${channel.id} for username: ${username}`);
-            channelId = channel.id;
-          } else {
-            console.log(`No channel found for username: ${username}`);
-            throw new Error(`Could not find channel for username: ${username}`);
-          }
-        } catch (usernameError) {
-          console.error(`Error resolving username:`, usernameError);
-          if (usernameError instanceof Error) {
-            throw usernameError;
-          } else {
-            throw new Error(`Error resolving username: ${JSON.stringify(usernameError)}`);
-          }
-        }
-      }
-      // Handle custom URLs (youtube.com/c/customname)
+      
+      // Custom channel name (youtube.com/c/...)
       else if (urlObj.pathname.includes('/c/')) {
-        try {
-          const customName = urlObj.pathname.split('/c/')[1].split('/')[0];
-          console.log(`Found custom URL format: ${customName}`);
+        const parts = urlObj.pathname.split('/');
+        const index = parts.findIndex(part => part === 'c');
+        if (index >= 0 && parts.length > index + 1) {
+          const customName = parts[index + 1];
+          console.log(`Found custom name in URL: ${customName}, fetching channel ID...`);
           
-          // For custom URLs, search is the most reliable method
-          const searchResults = await this.searchChannels(customName);
-          
-          if (searchResults && searchResults.length > 0) {
-            console.log(`Found channel via custom URL search: ${searchResults[0].title}`);
+          // We need to search for the channel to get its ID
+          const searchResults = await this.searchChannels(customName, 1);
+          if (searchResults.length > 0) {
             channelId = searchResults[0].id;
-          } else {
-            throw new Error(`No channel found for custom URL: ${customName}`);
-          }
-        } catch (customUrlError) {
-          console.error(`Error resolving custom URL:`, customUrlError);
-          if (customUrlError instanceof Error) {
-            throw customUrlError;
-          } else {
-            throw new Error(`Error resolving custom URL: ${JSON.stringify(customUrlError)}`);
+            console.log(`Found channel ID for custom name: ${channelId}`);
           }
         }
       }
       
+      // User name (youtube.com/@username)
+      else if (urlObj.pathname.includes('/@')) {
+        const username = urlObj.pathname.split('/@')[1]?.split('/')[0];
+        if (username) {
+          console.log(`Found username in URL: @${username}, fetching channel ID...`);
+          
+          // Search for channel by username
+          const channel = await this.getChannelByUsername(username);
+          if (channel) {
+            channelId = channel.id;
+            console.log(`Found channel ID for username: ${channelId}`);
+          }
+        }
+      }
+      
+      // If we found a channel ID, cache it
       if (channelId) {
-        // Cache the result for future requests
         try {
           await dbService.setCacheEntry(cacheKey, channelId, CACHE_TYPES.URL_TO_ID);
         } catch (cacheError) {
-          console.error('Error caching URL mapping:', cacheError);
+          console.error('Error caching channel ID for URL:', cacheError);
         }
-        return channelId;
       }
       
-      // If we reach here, we couldn't parse a channel ID from the URL
-      throw new Error(`Could not parse channel information from URL: ${url}`);
+      return channelId;
     } catch (error) {
-      console.error('Error parsing YouTube URL:', error);
-      if (error instanceof Error) {
-        throw error; // Rethrow the existing error with its stack trace
-      } else {
-        throw new Error(`Error parsing YouTube URL: ${JSON.stringify(error)}`);
-      }
+      console.error('Error getting channel ID from URL:', error);
+      throw error;
     }
   }
   

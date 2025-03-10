@@ -52,7 +52,13 @@ export default function VideoCard({ video }: VideoCardProps) {
 
   // Use a fallback thumbnail URL if the original fails
   const getFallbackThumbnail = () => {
-    return `https://i.ytimg.com/vi/${video.id}/default.jpg`;
+    // Try to get a higher quality fallback if possible - maxresdefault first
+    return `https://i.ytimg.com/vi/${video.id}/maxresdefault.jpg`;
+  };
+
+  // Second fallback if the maxres version fails
+  const getSecondFallbackThumbnail = () => {
+    return `https://i.ytimg.com/vi/${video.id}/hqdefault.jpg`;
   };
 
   // Toggle video playback
@@ -104,8 +110,26 @@ export default function VideoCard({ video }: VideoCardProps) {
                   fill
                   sizes="(max-width: 768px) 100vw, (max-width: 1200px) 50vw, 33vw"
                   className="object-cover"
-                  onError={() => setImageError(true)}
+                  onError={(e) => {
+                    // Try the maxres fallback first
+                    const target = e.target as HTMLImageElement;
+                    target.src = getFallbackThumbnail();
+                    
+                    // Add an additional error handler for the fallback
+                    target.onerror = () => {
+                      target.src = getSecondFallbackThumbnail();
+                      
+                      // Final fallback
+                      target.onerror = () => {
+                        setImageError(true);
+                      };
+                    };
+                  }}
                   id={`thumbnail-${video.id}`}
+                  priority
+                  quality={100}
+                  loading="eager"
+                  unoptimized={false} // Let Next.js optimize for max quality
                 />
                 <div className="absolute inset-0 bg-black opacity-0 group-hover:opacity-40 transition-opacity duration-300"></div>
                 <div className="absolute inset-0 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity duration-300">

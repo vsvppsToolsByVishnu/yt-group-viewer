@@ -323,34 +323,52 @@ export const clearCache = async (type?: string): Promise<void> => {
 // ==================== Videos ====================
 
 export const saveVideos = async (videos: Video[]): Promise<void> => {
-  if (!videos.length) return;
+  if (!videos || videos.length === 0) return;
   
   const db = await getDbConnection();
   
   try {
+    // Start a transaction to ensure all inserts are atomic
     await db.run('BEGIN TRANSACTION');
     
+    // Prepare the statement for inserting videos
+    const insertStmt = await db.prepare(`
+      INSERT OR REPLACE INTO videos (
+        id, title, thumbnail_url, channel_id, channel_title, published_at, view_count
+      ) VALUES (?, ?, ?, ?, ?, ?, ?)
+    `);
+    
+    // Insert each video
     for (const video of videos) {
-      await db.run(
-        `INSERT OR REPLACE INTO videos 
-        (id, title, thumbnail_url, channel_id, channel_title, published_at, view_count) 
-        VALUES (?, ?, ?, ?, ?, ?, ?)`,
-        [
-          video.id,
-          video.title,
-          video.thumbnailUrl,
-          video.channelId,
-          video.channelTitle,
-          video.publishedAt,
-          video.viewCount
-        ]
-      );
+      await insertStmt.run([
+        video.id,
+        video.title,
+        // Ensure we're saving the highest quality thumbnail URL
+        video.thumbnailUrl,
+        video.channelId,
+        video.channelTitle,
+        video.publishedAt,
+        video.viewCount
+      ]);
     }
     
+    // Finalize the statement
+    await insertStmt.finalize();
+    
+    // Commit the transaction
     await db.run('COMMIT');
+    
+    console.log(`Saved ${videos.length} videos to the database`);
   } catch (error) {
-    await db.run('ROLLBACK');
+    // Rollback in case of error
+    try {
+      await db.run('ROLLBACK');
+    } catch (rollbackError) {
+      console.error('Error during rollback:', rollbackError);
+    }
+    
     console.error('Error saving videos:', error);
+    throw error;
   }
 };
 

@@ -569,6 +569,9 @@ export default function ChannelSearch() {
                                   const target = e.target as HTMLImageElement;
                                   target.src = 'https://placehold.co/40x40/red/white?text=YT';
                                 }}
+                                quality={100}
+                                priority
+                                unoptimized={false}
                               />
                             </div>
                             <div>
@@ -636,6 +639,9 @@ export default function ChannelSearch() {
                                 const target = e.target as HTMLImageElement;
                                 target.src = 'https://placehold.co/40x40/red/white?text=YT';
                               }}
+                              quality={100}
+                              priority
+                              unoptimized={false}
                             />
                           </div>
                           <div className="flex-1 min-w-0">
