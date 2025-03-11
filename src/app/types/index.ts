@@ -11,6 +11,13 @@ export interface Group {
   id: string;
   name: string;
   channels: Channel[];
+  parentId?: string; // Optional parent group id for subgroups
+  subgroups?: Group[]; // Optional array of subgroups
+  isExpanded?: boolean; // Whether the subgroups are expanded/visible
+  subgroupCount?: number; // Number of direct subgroups
+  channelCount?: number; // Number of channels in this group
+  createdAt?: number; // Creation timestamp
+  updatedAt?: number; // Last update timestamp
 }
 
 // Video types

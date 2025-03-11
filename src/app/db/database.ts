@@ -13,6 +13,12 @@ class YouTubeToolDatabase extends Dexie {
       groups: 'id, name, *channels.id',
       apiKeys: '++id, name, key, priority'
     });
+
+    // Add parentId for hierarchical groups support
+    this.version(2).stores({
+      groups: 'id, name, parentId, *channels.id',
+      apiKeys: '++id, name, key, priority'
+    });
   }
 }
 

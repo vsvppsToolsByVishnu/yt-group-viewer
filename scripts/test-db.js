@@ -37,7 +37,10 @@ const db = new sqlite3.Database(dbPath, (err) => {
     
     CREATE TABLE IF NOT EXISTS groups (
       id TEXT PRIMARY KEY,
-      name TEXT NOT NULL
+      name TEXT NOT NULL,
+      parent_id TEXT,
+      is_expanded INTEGER DEFAULT 0,
+      FOREIGN KEY (parent_id) REFERENCES groups(id) ON DELETE CASCADE
     );
     
     CREATE TABLE IF NOT EXISTS channels (
@@ -88,39 +91,160 @@ const db = new sqlite3.Database(dbPath, (err) => {
 
 // Test adding a group
 function testGroup() {
-  console.log('\n=== Testing Group Operations ===');
+  console.log("\n=== Testing Group Operations ===");
   
-  const groupId = 'test-group-' + Date.now();
-  const groupName = 'Test Group';
+  // Create a test group
+  const mainGroupId = Math.random().toString(36).substring(2, 15);
+  const subGroupId = Math.random().toString(36).substring(2, 15);
+  const subSubGroupId = Math.random().toString(36).substring(2, 15);
   
-  // Insert a test group
-  db.run('INSERT INTO groups (id, name) VALUES (?, ?)', [groupId, groupName], function(err) {
-    if (err) {
-      console.error('Error inserting group:', err.message);
-      return closeAndExit(1);
-    }
-    console.log(`Group inserted with ID: ${groupId}`);
-    
-    // Read groups
-    db.all('SELECT * FROM groups', [], (err, rows) => {
+  // Create main group
+  db.run(
+    'INSERT INTO groups (id, name, is_expanded) VALUES (?, ?, ?)',
+    [mainGroupId, 'Test Main Group', 1],
+    function(err) {
       if (err) {
-        console.error('Error reading groups:', err.message);
-        return closeAndExit(1);
+        console.error('Error creating main group:', err.message);
+        return;
       }
-      console.log('Groups in database:');
-      console.log(rows);
+      console.log('Main group created with ID:', mainGroupId);
       
-      // Delete the test group
-      db.run('DELETE FROM groups WHERE id = ?', [groupId], function(err) {
-        if (err) {
-          console.error('Error deleting group:', err.message);
-          return closeAndExit(1);
+      // Create sub group
+      db.run(
+        'INSERT INTO groups (id, name, parent_id, is_expanded) VALUES (?, ?, ?, ?)',
+        [subGroupId, 'Test Sub Group', mainGroupId, 1],
+        function(err) {
+          if (err) {
+            console.error('Error creating sub group:', err.message);
+            return;
+          }
+          console.log('Sub group created with ID:', subGroupId);
+          
+          // Create sub-sub group
+          db.run(
+            'INSERT INTO groups (id, name, parent_id, is_expanded) VALUES (?, ?, ?, ?)',
+            [subSubGroupId, 'Test Sub-Sub Group', subGroupId, 0],
+            function(err) {
+              if (err) {
+                console.error('Error creating sub-sub group:', err.message);
+                return;
+              }
+              console.log('Sub-sub group created with ID:', subSubGroupId);
+              
+              // Create a test channel
+              const channelId = 'test_channel_' + Math.random().toString(36).substring(2, 9);
+              db.run(
+                'INSERT INTO channels (id, title, thumbnail_url, description) VALUES (?, ?, ?, ?)',
+                [channelId, 'Test Channel', 'https://example.com/thumbnail.jpg', 'Test description'],
+                function(err) {
+                  if (err) {
+                    console.error('Error creating test channel:', err.message);
+                    return;
+                  }
+                  console.log('Test channel created with ID:', channelId);
+                  
+                  // Associate channel with groups
+                  db.run(
+                    'INSERT INTO group_channels (group_id, channel_id) VALUES (?, ?)',
+                    [mainGroupId, channelId],
+                    function(err) {
+                      if (err) {
+                        console.error('Error associating channel with main group:', err.message);
+                        return;
+                      }
+                      console.log('Channel associated with main group');
+                      
+                      // Create another channel for subgroup
+                      const subChannelId = 'test_subchannel_' + Math.random().toString(36).substring(2, 9);
+                      db.run(
+                        'INSERT INTO channels (id, title, thumbnail_url, description) VALUES (?, ?, ?, ?)',
+                        [subChannelId, 'Test Sub Channel', 'https://example.com/subthumbnail.jpg', 'Test sub description'],
+                        function(err) {
+                          if (err) {
+                            console.error('Error creating test sub channel:', err.message);
+                            return;
+                          }
+                          console.log('Test sub channel created with ID:', subChannelId);
+                          
+                          // Associate channel with subgroup
+                          db.run(
+                            'INSERT INTO group_channels (group_id, channel_id) VALUES (?, ?)',
+                            [subGroupId, subChannelId],
+                            function(err) {
+                              if (err) {
+                                console.error('Error associating channel with sub group:', err.message);
+                                return;
+                              }
+                              console.log('Channel associated with sub group');
+                              
+                              // Test retrieving group hierarchy
+                              db.get(
+                                `SELECT g.*, 
+                                  (SELECT COUNT(*) FROM groups WHERE parent_id = g.id) as subgroup_count,
+                                  (SELECT COUNT(*) FROM group_channels WHERE group_id = g.id) as channel_count
+                                FROM groups g WHERE g.id = ?`,
+                                [mainGroupId],
+                                function(err, group) {
+                                  if (err) {
+                                    console.error('Error retrieving group:', err.message);
+                                    return;
+                                  }
+                                  console.log('Main group with counts:', group);
+                                  
+                                  // Get subgroups
+                                  db.all(
+                                    'SELECT * FROM groups WHERE parent_id = ?',
+                                    [mainGroupId],
+                                    function(err, subgroups) {
+                                      if (err) {
+                                        console.error('Error retrieving subgroups:', err.message);
+                                        return;
+                                      }
+                                      console.log(`Found ${subgroups.length} subgroups for main group:`, subgroups);
+                                      
+                                      // Test cleanup - delete main group (should cascade delete subgroups)
+                                      testCleanup(mainGroupId);
+                                    }
+                                  );
+                                }
+                              );
+                            }
+                          );
+                        }
+                      );
+                    }
+                  );
+                }
+              );
+            }
+          );
         }
-        console.log(`Group with ID ${groupId} deleted.`);
-        
-        // Test cache
+      );
+    }
+  );
+}
+
+function testCleanup(mainGroupId) {
+  console.log("\n=== Cleanup - Deleting Test Groups ===");
+  
+  // Delete main group (will cascade delete subgroups and group-channel associations)
+  db.run('DELETE FROM groups WHERE id = ?', [mainGroupId], function(err) {
+    if (err) {
+      console.error('Error deleting main group:', err.message);
+      return;
+    }
+    console.log('Main group and all subgroups deleted successfully');
+    
+    // Verify deletion
+    db.all('SELECT * FROM groups WHERE id = ? OR parent_id = ?', [mainGroupId, mainGroupId], function(err, groups) {
+      if (err) {
+        console.error('Error verifying deletion:', err.message);
+        return;
+      }
+      console.log(`Found ${groups.length} groups after deletion (should be 0):`, groups);
+      
+      // Test cache next
         testCache();
-      });
     });
   });
 }

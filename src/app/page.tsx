@@ -29,14 +29,23 @@ export default function Home() {
     setSortOption(sort);
   };
 
-  const handleClearCache = () => {
-    youtubeService.clearCache();
-    localStorage.removeItem('searchCache');
-    setShowCacheCleared(true);
-    
-    setTimeout(() => {
+  const handleClearCache = async () => {
+    try {
+      setShowCacheCleared(true);
+      await youtubeService.clearCache();
+      localStorage.removeItem('searchCache');
+      console.log('Cache cleared successfully');
+      
+      // Refresh the current page to ensure data is reloaded
+      window.location.reload();
+    } catch (error) {
+      console.error('Error clearing cache:', error);
       setShowCacheCleared(false);
-    }, 3000);
+    } finally {
+      setTimeout(() => {
+        setShowCacheCleared(false);
+      }, 3000);
+    }
   };
 
   return (

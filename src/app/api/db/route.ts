@@ -19,6 +19,18 @@ export async function GET(request: NextRequest) {
         const group = await sqliteDB.getGroup(groupId);
         return NextResponse.json({ success: true, data: group });
         
+      case 'getGroupHierarchy':
+        const hierarchy = await sqliteDB.getGroupHierarchy();
+        return NextResponse.json({ success: true, data: hierarchy });
+        
+      case 'getGroupWithSubtree':
+        const subtreeGroupId = searchParams.get('id');
+        if (!subtreeGroupId) {
+          return NextResponse.json({ success: false, error: 'Group ID is required' }, { status: 400 });
+        }
+        const subtree = await sqliteDB.getGroupWithSubtree(subtreeGroupId);
+        return NextResponse.json({ success: true, data: subtree });
+        
       case 'getAPIKeys':
         const apiKeys = await sqliteDB.getAPIKeys();
         return NextResponse.json({ success: true, data: apiKeys });
@@ -50,7 +62,10 @@ export async function GET(request: NextRequest) {
     }
   } catch (error) {
     console.error(`Error in DB API route (${action}):`, error);
-    return NextResponse.json({ success: false, error: 'Internal server error' }, { status: 500 });
+    return NextResponse.json({ 
+      success: false, 
+      error: 'Internal server error: ' + (error instanceof Error ? error.message : String(error))
+    }, { status: 500 });
   }
 }
 
@@ -64,15 +79,41 @@ export async function POST(request: NextRequest) {
         if (!data || !data.group) {
           return NextResponse.json({ success: false, error: 'Group data is required' }, { status: 400 });
         }
-        const groupId = await sqliteDB.saveGroup(data.group);
-        return NextResponse.json({ success: true, data: { id: groupId } });
+        try {
+          console.log('DB API: Received save request for group:', JSON.stringify({
+            id: data.group.id,
+            name: data.group.name,
+            parentId: data.group.parentId
+          }));
+          
+          const groupId = await sqliteDB.saveGroup(data.group);
+          return NextResponse.json({ success: true, data: { id: groupId } });
+        } catch (error) {
+          console.error('Error saving group:', error);
+          return NextResponse.json({ 
+            success: false, 
+            error: 'Error saving group: ' + (error instanceof Error ? error.message : String(error))
+          }, { status: 500 });
+        }
         
       case 'deleteGroup':
         if (!data || !data.id) {
           return NextResponse.json({ success: false, error: 'Group ID is required' }, { status: 400 });
         }
-        await sqliteDB.deleteGroup(data.id);
-        return NextResponse.json({ success: true });
+        
+        console.log(`[API] Received request to delete group: ${data.id}`);
+        
+        try {
+          await sqliteDB.deleteGroup(data.id);
+          console.log(`[API] Successfully deleted group: ${data.id}`);
+          return NextResponse.json({ success: true });
+        } catch (error) {
+          console.error(`[API] Error deleting group ${data.id}:`, error);
+          return NextResponse.json({ 
+            success: false, 
+            error: 'Error deleting group: ' + (error instanceof Error ? error.message : String(error))
+          }, { status: 500 });
+        }
         
       case 'saveAPIKey':
         if (!data || !data.apiKey) {

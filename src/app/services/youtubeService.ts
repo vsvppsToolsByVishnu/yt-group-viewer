@@ -458,8 +458,16 @@ class YouTubeApiService {
   // Get channel ID from a YouTube URL with caching
   async getChannelIdFromUrl(url: string): Promise<string | null> {
     try {
-      const urlObj = new URL(url);
+      // Clean up the URL for better parsing
+      url = url.trim();
+      if (url.includes('/videos')) {
+        // Remove '/videos' suffix if present - it's not needed for channel identification
+        url = url.replace('/videos', '');
+      }
+      
       console.log(`Processing YouTube URL: ${url}`);
+      
+      const urlObj = new URL(url);
       
       // Check if we have this URL cached
       const cacheKey = `url:${url}`;
@@ -514,6 +522,8 @@ class YouTubeApiService {
           if (channel) {
             channelId = channel.id;
             console.log(`Found channel ID for username: ${channelId}`);
+          } else {
+            console.log(`Could not find channel for username: @${username}`);
           }
         }
       }
@@ -522,9 +532,12 @@ class YouTubeApiService {
       if (channelId) {
         try {
           await dbService.setCacheEntry(cacheKey, channelId, CACHE_TYPES.URL_TO_ID);
+          console.log(`Cached channel ID ${channelId} for URL: ${url}`);
         } catch (cacheError) {
           console.error('Error caching channel ID for URL:', cacheError);
         }
+      } else {
+        console.log(`Could not extract channel ID from URL: ${url}`);
       }
       
       return channelId;
@@ -538,9 +551,9 @@ class YouTubeApiService {
   async clearCache(): Promise<void> {
     try {
       await dbService.clearCache();
-      console.log('Cache cleared');
+      console.log('[YouTubeService] Cache cleared successfully');
     } catch (error) {
-      console.error('Error clearing cache:', error);
+      console.error('[YouTubeService] Error clearing cache:', error);
     }
   }
 }

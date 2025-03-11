@@ -3,21 +3,41 @@ import { Group, Channel, APIKey, Video } from '../types';
 // Base URL for API endpoints
 const API_BASE_URL = '/api/db';
 
-// Simple in-memory cache to reduce redundant API calls
-type CacheEntry<T> = {
-  data: T;
-  timestamp: number;
-};
+// Cache structure with improved typing
+interface CacheStore {
+  groups?: {
+    data: Group[];
+    timestamp: number;
+    expiresAt: number;
+  };
+  group: Record<string, {
+    data: Group | null;
+    timestamp: number;
+    expiresAt: number;
+  }>;
+  hierarchies?: {
+    data: Group[];
+    timestamp: number;
+    expiresAt: number;
+  };
+  apiKeys?: {
+    data: APIKey[];
+    timestamp: number;
+    expiresAt: number;
+  };
+}
 
-const cache: {
-  groups?: CacheEntry<Group[]>;
-  group: Record<string, CacheEntry<Group | null>>;
-} = {
+// Improved cache store
+const cache: CacheStore = {
   group: {}
 };
 
-// Cache expiration time (5 seconds)
-const CACHE_EXPIRY = 5000;
+// Cache TTLs
+const CACHE_TTL = {
+  SHORT: 30 * 1000,  // 30 seconds
+  MEDIUM: 5 * 60 * 1000, // 5 minutes
+  LONG: 30 * 60 * 1000, // 30 minutes
+};
 
 // Helper function for GET requests
 async function fetchGet<T>(action: string, params: Record<string, string> = {}): Promise<T> {
@@ -62,132 +82,340 @@ async function fetchGet<T>(action: string, params: Record<string, string> = {}):
 
 // Helper function for POST requests
 async function fetchPost<T>(action: string, data: any = {}): Promise<T> {
-  const response = await fetch(API_BASE_URL, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({ action, data }),
-  });
-  
-  if (!response.ok) {
-    const error = await response.json();
-    throw new Error(error.error || 'An error occurred');
+  try {
+    // Special handling for group objects to ensure parentId is properly passed
+    if (action === 'saveGroup' && data.group) {
+      // Log the group data before processing
+      console.log(`[fetchPost] Pre-processing group data:`, JSON.stringify({
+        id: data.group.id,
+        name: data.group.name,
+        parentId: data.group.parentId
+      }));
+
+      // Make sure we preserve parentId exactly as it is
+      if (data.group.parentId === undefined) {
+        console.log(`[fetchPost] Group ${data.group.id} has undefined parentId (top-level group)`);
+      } else if (data.group.parentId === null) {
+        console.log(`[fetchPost] Group ${data.group.id} has null parentId (will be converted to undefined)`);
+        // Convert null to undefined for consistency
+        data.group.parentId = undefined;
+      } else {
+        console.log(`[fetchPost] Group ${data.group.id} has parentId=${data.group.parentId} (subgroup)`);
+      }
+    }
+    
+    // Ensure we're not sending circular references
+    const jsonData = JSON.stringify(data, (key, value) => {
+      // Handle circular references by replacing with string
+      if (key === 'subgroups') return undefined; // Don't send computed subgroups
+      return value;
+    });
+    
+    // Log the complete request for debugging
+    if (action === 'saveGroup') {
+      console.log(`[fetchPost] Final request body:`, jsonData);
+    }
+    
+    const response = await fetch(API_BASE_URL, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ action, data: JSON.parse(jsonData) }),
+    });
+    
+    if (!response.ok) {
+      const error = await response.json().catch(() => ({ error: `HTTP error! status: ${response.status}` }));
+      throw new Error(error.error || 'An error occurred');
+    }
+    
+    const result = await response.json();
+    return result.data;
+  } catch (error) {
+    console.error(`Error in fetchPost (${action}):`, error);
+    throw error;
   }
-  
-  const result = await response.json();
-  return result.data;
 }
 
 // ==================== Groups ====================
 
 export const getGroups = async (): Promise<Group[]> => {
-  const now = Date.now();
-  
   // Check cache first
-  if (cache.groups && (now - cache.groups.timestamp) < CACHE_EXPIRY) {
+  if (cache.groups && Date.now() < cache.groups.expiresAt) {
     console.log('Using cached groups data');
     return cache.groups.data;
   }
   
-  console.log('Fetching all groups from API');
-  const groups = await fetchGet<Group[]>('getGroups');
-  
-  // Update cache
-  cache.groups = {
-    data: groups,
-    timestamp: now
-  };
-  
-  // Also update individual group cache entries
-  groups.forEach(group => {
-    cache.group[group.id] = {
-      data: group,
-      timestamp: now
+  try {
+    const groups = await fetchGet<Group[]>('getGroups');
+    
+    // Cache the result
+    cache.groups = {
+      data: groups,
+      timestamp: Date.now(),
+      expiresAt: Date.now() + CACHE_TTL.MEDIUM
     };
-  });
+    
+    return groups;
+  } catch (error) {
+    console.error('Error getting groups:', error);
+    // If we have stale cache, return it
+    if (cache.groups) {
+      console.log('Returning stale groups cache due to error');
+      return cache.groups.data;
+    }
+    throw error;
+  }
+};
+
+export const getGroupHierarchy = async (): Promise<Group[]> => {
+  // Check cache first
+  if (cache.hierarchies && Date.now() < cache.hierarchies.expiresAt) {
+    console.log('Using cached group hierarchy');
+    return cache.hierarchies.data;
+  }
   
-  return groups;
+  try {
+    const hierarchy = await fetchGet<Group[]>('getGroupHierarchy');
+    
+    // Cache the result
+    cache.hierarchies = {
+      data: hierarchy,
+      timestamp: Date.now(),
+      expiresAt: Date.now() + CACHE_TTL.MEDIUM
+    };
+    
+    return hierarchy;
+  } catch (error) {
+    console.error('Error getting group hierarchy:', error);
+    // If we have stale cache, return it
+    if (cache.hierarchies) {
+      console.log('Returning stale hierarchy cache due to error');
+      return cache.hierarchies.data;
+    }
+    throw error;
+  }
 };
 
 export const getGroup = async (id: string): Promise<Group | null> => {
+  // Check cache first
+  if (cache.group[id] && Date.now() < cache.group[id].expiresAt) {
+    console.log(`Using cached data for group ID: ${id}`);
+    return cache.group[id].data;
+  }
+  
   try {
-    // Add console logging to help diagnose issues
-    console.log(`Fetching group with ID: ${id}`);
-    
-    const now = Date.now();
-    
-    // Check cache first
-    if (cache.group[id] && (now - cache.group[id].timestamp) < CACHE_EXPIRY) {
-      console.log(`Using cached data for group ID: ${id}`);
-      return cache.group[id].data;
-    }
-    
     const group = await fetchGet<Group | null>('getGroup', { id });
     
-    // Update cache
+    // Cache the result
     if (group) {
-      console.log(`Successfully retrieved group: ${group.name}`);
       cache.group[id] = {
         data: group,
-        timestamp: now
+        timestamp: Date.now(),
+        expiresAt: Date.now() + CACHE_TTL.MEDIUM
       };
     } else {
-      console.log(`No group found with ID: ${id}`);
-      // Cache negative result too (for a shorter time)
+      // Cache negative result for a shorter time
       cache.group[id] = {
         data: null,
-        timestamp: now
+        timestamp: Date.now(),
+        expiresAt: Date.now() + CACHE_TTL.SHORT
       };
     }
     
     return group;
   } catch (error) {
-    console.error(`Error fetching group with ID ${id}:`, error);
-    
-    // Try once more with a slight delay, as this could be a transient network issue
-    try {
-      console.log(`Retrying fetch for group ID: ${id}`);
-      await new Promise(resolve => setTimeout(resolve, 300)); // 300ms delay
-      
-      const group = await fetchGet<Group | null>('getGroup', { id });
-      
-      // Update cache on successful retry
-      if (group) {
-        console.log(`Successfully retrieved group on retry: ${group.name}`);
-        cache.group[id] = {
-          data: group,
-          timestamp: Date.now()
-        };
-      } else {
-        console.log(`No group found with ID on retry: ${id}`);
-      }
-      
-      return group;
-    } catch (retryError) {
-      console.error(`Error on retry fetch for group ID ${id}:`, retryError);
-      return null; // Return null after failing twice
+    console.error(`Error getting group ${id}:`, error);
+    // If we have stale cache, return it
+    if (cache.group[id]) {
+      console.log(`Returning stale cache for group ${id} due to error`);
+      return cache.group[id].data;
     }
+    throw error;
   }
+};
+
+export const getGroupWithSubtree = async (id: string): Promise<Group | null> => {
+  // For full subtrees, we use a separate cache key to avoid conflicts
+  const cacheKey = `${id}_subtree`;
+  
+  // Check cache first
+  if (cache.group[cacheKey] && Date.now() < cache.group[cacheKey].expiresAt) {
+    console.log(`Using cached subtree data for group ID: ${id}`);
+    return cache.group[cacheKey].data;
+  }
+  
+  try {
+    const group = await fetchGet<Group | null>('getGroupWithSubtree', { id });
+    
+    // Cache the result
+    if (group) {
+      cache.group[cacheKey] = {
+        data: group,
+        timestamp: Date.now(),
+        expiresAt: Date.now() + CACHE_TTL.MEDIUM
+      };
+    }
+    
+    return group;
+  } catch (error) {
+    console.error(`Error getting group subtree ${id}:`, error);
+    // If we have stale cache, return it
+    if (cache.group[cacheKey]) {
+      console.log(`Returning stale subtree cache for group ${id} due to error`);
+      return cache.group[cacheKey].data;
+    }
+    throw error;
+  }
+};
+
+// Clear specific group cache
+export const clearGroupCache = (groupId?: string): void => {
+  // Always clear the groups and hierarchies cache
+  delete cache.groups;
+  delete cache.hierarchies;
+  
+  if (groupId) {
+    // Clear the specific group
+    delete cache.group[groupId];
+    
+    // Find and clear any parent groups that might contain this as a subgroup
+    Object.keys(cache.group).forEach(cachedGroupId => {
+      const cachedGroup = cache.group[cachedGroupId]?.data;
+      if (cachedGroup && hasSubgroupWithId(cachedGroup, groupId)) {
+        delete cache.group[cachedGroupId];
+      }
+    });
+  } else {
+    // Clear all group caches
+    cache.group = {};
+  }
+};
+
+// Helper to check if a group has a specific subgroup id
+const hasSubgroupWithId = (group: Group, subgroupId: string): boolean => {
+  if (!group.subgroups) return false;
+  
+  // Check direct subgroups
+  if (group.subgroups.some(sg => sg.id === subgroupId)) {
+    return true;
+  }
+  
+  // Check nested subgroups
+  return group.subgroups.some(sg => hasSubgroupWithId(sg, subgroupId));
 };
 
 export const saveGroup = async (group: Group): Promise<string> => {
-  // Clear related caches when saving a group
-  delete cache.groups;
-  if (group.id) {
-    delete cache.group[group.id];
+  // Clear all related caches
+  clearGroupCache(group.id);
+  
+  // Log the group with special attention to parentId
+  console.log(`[dbService] Saving group ${group.id} (${group.name}) with parentId=${group.parentId !== undefined ? `"${group.parentId}"` : 'undefined'}`);
+  
+  // If group has a parent, clear the parent's cache too
+  if (group.parentId) {
+    clearGroupCache(group.parentId);
+    console.log(`[dbService] This is a subgroup with parent ${group.parentId}`);
+  } else {
+    console.log(`[dbService] This is a top-level group (no parent)`);
   }
   
-  const result = await fetchPost<{ id: string }>('saveGroup', { group });
-  return result.id;
+  // Get all existing subgroups for this group to ensure they're preserved
+  let existingSubgroups: Group[] = [];
+  try {
+    const fullGroup = await getGroupWithSubtree(group.id);
+    if (fullGroup && fullGroup.subgroups && fullGroup.subgroups.length > 0) {
+      existingSubgroups = fullGroup.subgroups;
+      console.log(`[dbService] Found ${existingSubgroups.length} existing subgroups for group ${group.id}`);
+    }
+  } catch (error) {
+    console.warn(`[dbService] Error fetching existing subgroups for ${group.id}:`, error);
+  }
+  
+  // Create a copy without circular references
+  const groupToSave = {
+    ...group,
+    // Preserve existing subgroups if not already in the group
+    subgroups: group.subgroups && group.subgroups.length > 0 
+      ? group.subgroups 
+      : existingSubgroups.length > 0 
+        ? existingSubgroups 
+        : undefined
+  };
+  
+  // Log what we're about to save
+  console.log(`[dbService] POST body:`, JSON.stringify({ 
+    action: 'saveGroup', 
+    data: { 
+      group: {
+        id: groupToSave.id,
+        name: groupToSave.name,
+        parentId: groupToSave.parentId,
+        isExpanded: groupToSave.isExpanded,
+        hasSubgroups: groupToSave.subgroups ? groupToSave.subgroups.length : 0
+      }
+    }
+  }));
+  
+  try {
+    const result = await fetchPost<{ id: string }>('saveGroup', { group: groupToSave });
+    console.log(`[dbService] Group ${group.id} saved successfully with result:`, result);
+    
+    // Verify subgroups are intact after save
+    try {
+      const savedGroup = await getGroupWithSubtree(group.id);
+      if (savedGroup) {
+        const savedSubgroupCount = savedGroup.subgroups ? savedGroup.subgroups.length : 0;
+        console.log(`[dbService] After save, group ${group.id} has ${savedSubgroupCount} subgroups`);
+        
+        // Warn if we lost subgroups during the save
+        if (existingSubgroups.length > 0 && savedSubgroupCount < existingSubgroups.length) {
+          console.warn(`[dbService] WARNING: Lost subgroups during save. Before: ${existingSubgroups.length}, After: ${savedSubgroupCount}`);
+        }
+      }
+    } catch (verifyError) {
+      console.warn(`[dbService] Error verifying saved group tree:`, verifyError);
+    }
+    
+    return result.id;
+  } catch (error) {
+    console.error(`[dbService] Error saving group ${group.id}:`, error);
+    throw error;
+  }
 };
 
 export const deleteGroup = async (id: string): Promise<void> => {
-  // Clear related caches when deleting a group
-  delete cache.groups;
-  delete cache.group[id];
-  
-  await fetchPost('deleteGroup', { id });
+  try {
+    console.log(`[dbService] Deleting group with ID: ${id}`);
+    
+    // Get the group to check parent relationships before deletion
+    const group = await getGroup(id);
+    
+    if (group) {
+      console.log(`[dbService] Found group "${group.name}" (parentId: ${group.parentId || 'none'})`);
+    } else {
+      console.log(`[dbService] Group with ID ${id} not found, proceeding with deletion anyway`);
+    }
+    
+    // Clear local caches
+    delete cache.groups;
+    delete cache.hierarchies;
+    
+    // Clear group-specific cache
+    cache.group = {};
+    
+    // Clear any video caches that might be affected
+    await clearCache('videos');
+    
+    console.log(`[dbService] Cleared all relevant caches`);
+    
+    // Delete the group through the API
+    await fetchPost('deleteGroup', { id });
+    console.log(`[dbService] Group ${id} deleted successfully`);
+  } catch (error) {
+    console.error(`[dbService] Error deleting group ${id}:`, error);
+    throw error;
+  }
 };
 
 // ==================== API Keys ====================
@@ -224,7 +452,39 @@ export const setCacheEntry = async <T>(key: string, value: T, type: string): Pro
 };
 
 export const clearCache = async (type?: string): Promise<void> => {
-  await fetchPost('clearCache', { type });
+  // Clear local cache
+  if (!type) {
+    // Clear everything except group details
+    delete cache.groups;
+    delete cache.hierarchies;
+    delete cache.apiKeys;
+  } else {
+    switch (type) {
+      case 'groups':
+        delete cache.groups;
+        delete cache.hierarchies;
+        break;
+      case 'group':
+        cache.group = {};
+        delete cache.groups;
+        delete cache.hierarchies;
+        break;
+      case 'api-keys':
+        delete cache.apiKeys;
+        break;
+      default:
+        break;
+    }
+  }
+  
+  // Clear database cache
+  console.log(`[dbService] Clearing database cache${type ? ' for type: ' + type : ''}`);
+  try {
+    await fetchPost('clearCache', { type });
+    console.log('[dbService] Database cache cleared successfully');
+  } catch (error) {
+    console.error('[dbService] Error clearing database cache:', error);
+  }
 };
 
 // ==================== Videos ====================

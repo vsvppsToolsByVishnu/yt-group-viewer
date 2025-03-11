@@ -1,85 +1,83 @@
 import { initializeDatabase, getDbConnection } from './sqliteSetup';
-import * as indexedDb from './database'; // Import the old IndexedDB database
+import db, { getGroups, getAPIKeys } from './database'; // Import the default export and helper methods
 import { APIKey, Group } from '../types';
 
 // Initialize the database when this module is imported
 (async () => {
   console.log('Initializing SQLite database...');
   try {
-    const db = await initializeDatabase();
+    const sqliteDb = await initializeDatabase();
     console.log('SQLite database initialization complete');
     
+    // Verify schema 
+    const tableInfo = await sqliteDb.all("PRAGMA table_info(groups)");
+    console.log('Groups table schema:', tableInfo.map(col => col.name).join(', '));
+    
     // Check if we need to migrate data from IndexedDB
-    await migrateFromIndexedDB(db);
+    await migrateFromIndexedDB(sqliteDb);
   } catch (error) {
     console.error('Failed to initialize SQLite database:', error);
   }
 })();
 
 // Function to migrate data from IndexedDB to SQLite
-async function migrateFromIndexedDB(db: any) {
+async function migrateFromIndexedDB(sqliteDb: any) {
   try {
-    // Check if we've already migrated (by checking if any groups exist in SQLite)
-    const groupsExistQuery = await db.get('SELECT COUNT(*) as count FROM groups');
-    const apiKeysExistQuery = await db.get('SELECT COUNT(*) as count FROM api_keys');
-    
-    if (groupsExistQuery.count > 0 || apiKeysExistQuery.count > 0) {
-      console.log('Data already exists in SQLite, skipping migration');
+    // Check if data already exists in SQLite
+    const existingData = await sqliteDb.get('SELECT COUNT(*) as count FROM groups');
+    if (existingData && existingData.count > 0) {
+      console.log('Data already exists in SQLite database, skipping migration');
       return;
     }
-    
+
     console.log('Starting migration from IndexedDB to SQLite...');
     
-    // Migrate groups and their channels
-    const indexedDbGroups = await indexedDb.getGroups();
-    console.log(`Found ${indexedDbGroups.length} groups in IndexedDB`);
-    
     // Start a transaction
-    await db.exec('BEGIN TRANSACTION');
+    await sqliteDb.exec('BEGIN TRANSACTION');
     
-    // Migrate groups
+    // Get data from IndexedDB
+    const indexedDbGroups = await db.groups.toArray();
+    const indexedDbApiKeys = await db.apiKeys.toArray();
+    
+    // Insert groups
     for (const group of indexedDbGroups) {
-      // Insert the group
-      await db.run(
-        'INSERT INTO groups (id, name) VALUES (?, ?)',
-        [group.id, group.name]
+      await sqliteDb.run(
+        'INSERT INTO groups (id, name, parent_id, is_expanded) VALUES (?, ?, ?, ?)',
+        [group.id, group.name, group.parentId || null, group.isExpanded ? 1 : 0]
       );
       
-      // Insert each channel and create relationships
+      // Insert channels for this group
       for (const channel of group.channels) {
-        // Insert the channel if it doesn't exist
-        await db.run(
+        // Insert the channel
+        await sqliteDb.run(
           'INSERT OR IGNORE INTO channels (id, title, thumbnail_url, description) VALUES (?, ?, ?, ?)',
-          [channel.id, channel.title, channel.thumbnailUrl, channel.description]
+          [channel.id, channel.title, channel.thumbnailUrl, channel.description || null]
         );
         
-        // Create the relationship
-        await db.run(
+        // Create relationship
+        await sqliteDb.run(
           'INSERT INTO group_channels (group_id, channel_id) VALUES (?, ?)',
           [group.id, channel.id]
         );
       }
     }
     
-    // Migrate API keys
-    const indexedDbApiKeys = await indexedDb.getAPIKeys();
-    console.log(`Found ${indexedDbApiKeys.length} API keys in IndexedDB`);
-    
+    // Insert API keys
     for (const apiKey of indexedDbApiKeys) {
-      await db.run(
+      await sqliteDb.run(
         'INSERT INTO api_keys (name, key, priority, is_active) VALUES (?, ?, ?, ?)',
         [apiKey.name, apiKey.key, apiKey.priority, apiKey.isActive ? 1 : 0]
       );
     }
     
     // Commit the transaction
-    await db.exec('COMMIT');
+    await sqliteDb.exec('COMMIT');
     
     console.log('Migration from IndexedDB to SQLite completed successfully');
   } catch (error) {
     // Rollback in case of error
     try {
-      await db.exec('ROLLBACK');
+      await sqliteDb.exec('ROLLBACK');
     } catch (rollbackError) {
       console.error('Error rolling back transaction:', rollbackError);
     }
