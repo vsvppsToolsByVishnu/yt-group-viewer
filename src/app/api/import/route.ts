@@ -86,7 +86,9 @@ export async function POST(request: NextRequest) {
       apiKeys: 0,
       topLevelGroups: 0,
       subgroups: 0,
-      channels: 0
+      channels: 0,
+      linkGroups: 0,
+      links: 0
     };
     
     try {
@@ -314,6 +316,119 @@ export async function POST(request: NextRequest) {
         }
       }
       
+      // Process link groups if available
+      if (data.linkGroups && Array.isArray(data.linkGroups)) {
+        console.log(`Importing ${data.linkGroups.length} link groups`);
+        
+        // Define interface for link groups
+        interface ImportLinkGroup {
+          id: string;
+          name: string;
+          parentId?: string;
+          isExpanded?: boolean;
+          links?: any[]; // Links associated with this group
+          subgroups?: ImportLinkGroup[]; // Subgroups
+          [key: string]: any;
+        }
+        
+        // Function to recursively import link groups and their links
+        const importLinkGroupWithSubgroups = async (linkGroup: ImportLinkGroup, parentId?: string) => {
+          try {
+            // Log import with parent information
+            if (parentId) {
+              console.log(`Importing link subgroup: ${linkGroup.name} (${linkGroup.id}) with parent: ${parentId}`);
+              importedItems.linkGroups++;
+            } else {
+              console.log(`Importing top-level link group: ${linkGroup.name} (${linkGroup.id})`);
+              importedItems.linkGroups++;
+            }
+            
+            const now = Date.now();
+            
+            // Check if link group already exists
+            const existingLinkGroup = await db.get('SELECT * FROM link_groups WHERE id = ?', [linkGroup.id]);
+            
+            if (existingLinkGroup) {
+              // Update existing link group
+              console.log(`Updating existing link group: ${linkGroup.id} (${linkGroup.name})`);
+              await db.run(
+                'UPDATE link_groups SET name = ?, parent_id = ?, is_expanded = ?, updated_at = ? WHERE id = ?',
+                [linkGroup.name, parentId || null, linkGroup.isExpanded ? 1 : 0, now, linkGroup.id]
+              );
+            } else {
+              // Insert new link group
+              console.log(`Creating new link group: ${linkGroup.id} (${linkGroup.name}) with parentId=${parentId || 'null'}`);
+              await db.run(
+                'INSERT INTO link_groups (id, name, parent_id, is_expanded, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)',
+                [linkGroup.id, linkGroup.name, parentId || null, linkGroup.isExpanded ? 1 : 0, now, now]
+              );
+            }
+            
+            // Process links for this group (if any)
+            const links = linkGroup.links || [];
+            if (links.length > 0) {
+              console.log(`Importing ${links.length} links for link group ${linkGroup.id}`);
+              
+              // First, remove existing link associations
+              await db.run('DELETE FROM link_group_links WHERE group_id = ?', [linkGroup.id]);
+              
+              // Process each link
+              for (const link of links) {
+                // Ensure the link has an ID
+                const linkId = link.id || `link_${now}_${Math.random().toString(36).substring(2, 9)}`;
+                
+                // Check if link already exists
+                const existingLink = await db.get('SELECT * FROM links WHERE id = ?', [linkId]);
+                
+                if (existingLink) {
+                  // Update existing link
+                  console.log(`Updating existing link: ${linkId} (${link.title})`);
+                  await db.run(
+                    'UPDATE links SET title = ?, url = ?, description = ?, icon = ?, updated_at = ? WHERE id = ?',
+                    [link.title, link.url, link.description || null, link.icon || null, now, linkId]
+                  );
+                } else {
+                  // Insert new link
+                  console.log(`Creating new link: ${linkId} (${link.title})`);
+                  await db.run(
+                    'INSERT INTO links (id, title, url, description, icon, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
+                    [linkId, link.title, link.url, link.description || null, link.icon || null, now, now]
+                  );
+                }
+                
+                // Create the association between the group and the link
+                await db.run(
+                  'INSERT INTO link_group_links (group_id, link_id) VALUES (?, ?)',
+                  [linkGroup.id, linkId]
+                );
+                
+                // Increment the link count
+                importedItems.links++;
+              }
+            }
+            
+            // Process subgroups recursively (if any)
+            if (linkGroup.subgroups && linkGroup.subgroups.length > 0) {
+              console.log(`Processing ${linkGroup.subgroups.length} link subgroups for ${linkGroup.id}`);
+              
+              for (const subgroup of linkGroup.subgroups) {
+                await importLinkGroupWithSubgroups(subgroup, linkGroup.id);
+              }
+            }
+          } catch (error) {
+            console.error(`Error importing link group ${linkGroup.id}:`, error);
+            throw error;
+          }
+        };
+        
+        // Import all top-level link groups
+        for (const linkGroup of data.linkGroups) {
+          await importLinkGroupWithSubgroups(linkGroup);
+        }
+        
+        console.log(`Successfully imported link groups`);
+      }
+      
       // Log the final result of the import
       console.log(`====== Group Import Summary ======`);
       console.log(`Imported ${importedItems.topLevelGroups} top-level groups`);
@@ -335,7 +450,18 @@ export async function POST(request: NextRequest) {
       // Commit the transaction
       await db.run('COMMIT');
       
-      return NextResponse.json({ success: true, message: 'Data imported successfully' });
+      return NextResponse.json({ 
+        success: true, 
+        message: `Successfully imported data: ${importedItems.apiKeys} API keys, ${importedItems.topLevelGroups} top-level groups, ${importedItems.subgroups} subgroups, ${importedItems.channels} channels, ${importedItems.linkGroups} link groups, and ${importedItems.links} links.`,
+        data: {
+          apiKeys: importedItems.apiKeys,
+          topLevelGroups: importedItems.topLevelGroups,
+          subgroups: importedItems.subgroups,
+          channels: importedItems.channels,
+          linkGroups: importedItems.linkGroups,
+          links: importedItems.links
+        }
+      });
     } catch (error) {
       // Rollback on error
       await db.run('ROLLBACK');
@@ -366,11 +492,12 @@ function validateImportData(data: any): boolean {
     (data.apiKeys && Array.isArray(data.apiKeys)) ||
     (data.groups && Array.isArray(data.groups)) ||
     (data.channels && Array.isArray(data.channels)) ||
-    (data.groupChannels && Array.isArray(data.groupChannels))
+    (data.groupChannels && Array.isArray(data.groupChannels)) ||
+    (data.linkGroups && Array.isArray(data.linkGroups))
   );
   
   if (!hasValidContent) {
-    console.error("Invalid import data: Missing required arrays (apiKeys, groups, channels, or groupChannels)");
+    console.error("Invalid import data: Missing required arrays (apiKeys, groups, channels, groupChannels, or linkGroups)");
     return false;
   }
   
@@ -412,6 +539,36 @@ function validateImportData(data: any): boolean {
     
     if (hasInvalidGroup) {
       return false;
+    }
+  }
+  
+  // Validate link groups structure if present
+  if (data.linkGroups && Array.isArray(data.linkGroups)) {
+    for (const linkGroup of data.linkGroups) {
+      if (!linkGroup.id || !linkGroup.name) {
+        console.error("Invalid link group data: Missing required fields (id, name)");
+        return false;
+      }
+      
+      // Validate links if present
+      if (linkGroup.links && Array.isArray(linkGroup.links)) {
+        for (const link of linkGroup.links) {
+          if (!link.title || !link.url) {
+            console.error("Invalid link data: Missing required fields (title, url)");
+            return false;
+          }
+        }
+      }
+      
+      // Recursively validate subgroups if present
+      if (linkGroup.subgroups && Array.isArray(linkGroup.subgroups)) {
+        for (const subgroup of linkGroup.subgroups) {
+          if (!subgroup.id || !subgroup.name) {
+            console.error("Invalid link subgroup data: Missing required fields (id, name)");
+            return false;
+          }
+        }
+      }
     }
   }
   

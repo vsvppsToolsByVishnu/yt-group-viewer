@@ -44,6 +44,7 @@ export interface GroupContextType {
   groups: Group[];
   activeGroupId: string | null;
   setActiveGroupId: (id: string | null) => void;
+  setActiveGroupIdFromUrl: (id: string) => void;
   addGroup: (name: string, parentId?: string) => Promise<string | null>;
   editGroup: (id: string, name: string) => Promise<void>;
   deleteGroup: (id: string) => Promise<void>;
@@ -70,6 +71,7 @@ const GroupContext = createContext<GroupContextType>({
   groups: [],
   activeGroupId: null,
   setActiveGroupId: () => {},
+  setActiveGroupIdFromUrl: () => {},
   addGroup: async () => null,
   editGroup: async () => {},
   deleteGroup: async () => {},
@@ -115,6 +117,7 @@ const debounce = <F extends (...args: any[]) => any>(func: F, waitFor: number) =
 export function GroupProvider({ children }: { children: ReactNode }) {
   const [groups, setGroups] = useState<Group[]>([]);
   const [activeGroupId, setActiveGroupId] = useState<string | null>(null);
+  const [isFromUrlNavigation, setIsFromUrlNavigation] = useState(false);
   const [searchResults, setSearchResults] = useState<Channel[]>([]);
   const [isSearching, setIsSearching] = useState(false);
   const [hasMoreResults, setHasMoreResults] = useState(false);
@@ -123,6 +126,10 @@ export function GroupProvider({ children }: { children: ReactNode }) {
   const [searchError, setSearchError] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [dbError, setDbError] = useState<string | null>(null);
+  
+  // Add a ref to track if we should skip setting the default active group
+  // This allows the URL parameter to take precedence
+  const shouldSkipDefaultActiveGroup = useRef(true);
   
   // Refs for tracking loading state
   const isLoadingGroups = useRef(false);
@@ -133,11 +140,32 @@ export function GroupProvider({ children }: { children: ReactNode }) {
   const previousSearches = useRef<Map<string, Channel[]>>(new Map());
   const previousUrlFetches = useRef<Map<string, {success: boolean, message: string, channel?: Channel}>>(new Map());
   
+  // Create a special method for setting the active group from URL
+  const setActiveGroupIdFromUrl = useCallback((id: string) => {
+    console.log(`Setting active group from URL: ${id}`);
+    setIsFromUrlNavigation(true);
+    setActiveGroupId(id);
+  }, []);
+
   // Load groups on mount with error handling
   useEffect(() => {
     const initializeGroups = async () => {
       try {
+        // Check if there's a stored group ID in localStorage
+        const storedGroupId = typeof window !== 'undefined' ? localStorage.getItem('lastActiveGroupId') : null;
+        if (storedGroupId) {
+          console.log(`GroupContext: Found stored group ID: ${storedGroupId}`);
+          // Mark that we're handling a URL/stored group to prevent default selection
+          setIsFromUrlNavigation(true);
+        }
+        
         await loadGroups();
+        
+        // If we have a stored group ID and groups are loaded, set it as active
+        if (storedGroupId) {
+          console.log(`GroupContext: Setting active group from stored ID: ${storedGroupId}`);
+          setActiveGroupId(storedGroupId);
+        }
       } catch (error) {
         console.error('Error initializing groups:', error);
         setDbError(`Failed to load groups: ${error instanceof Error ? error.message : 'Unknown error'}`);
@@ -146,6 +174,48 @@ export function GroupProvider({ children }: { children: ReactNode }) {
     
     initializeGroups();
   }, []);
+
+  // Add event listener for URL parameter processing
+  useEffect(() => {
+    // Create a hidden debug element for cross-component communication
+    const debugElement = document.createElement('div');
+    debugElement.id = 'group-context-debug';
+    debugElement.style.display = 'none';
+    document.body.appendChild(debugElement);
+    
+    // Listen for the URL processed event
+    const handleUrlProcessed = () => {
+      console.log('URL parameter processed, clearing shouldSkipDefaultActiveGroup flag');
+      shouldSkipDefaultActiveGroup.current = false;
+    };
+    
+    // Listen for the no URL parameter event
+    const handleNoUrlParameter = () => {
+      console.log('No URL parameter found, allowing default group selection');
+      shouldSkipDefaultActiveGroup.current = false;
+      
+      // If we have groups but no active group, set the first one as active
+      if (groups.length > 0 && !activeGroupId) {
+        const topLevelGroups = groups.filter(g => !g.parentId);
+        if (topLevelGroups.length > 0) {
+          console.log('Setting default active group after URL check');
+          setActiveGroupId(topLevelGroups[0].id);
+        } else {
+          setActiveGroupId(groups[0].id);
+        }
+      }
+    };
+    
+    debugElement.addEventListener('url-processed', handleUrlProcessed);
+    debugElement.addEventListener('no-url-parameter', handleNoUrlParameter);
+    
+    // Clean up the element and listeners on unmount
+    return () => {
+      debugElement.removeEventListener('url-processed', handleUrlProcessed);
+      debugElement.removeEventListener('no-url-parameter', handleNoUrlParameter);
+      document.body.removeChild(debugElement);
+    };
+  }, [groups, activeGroupId]);
 
   // Define loadGroups function outside useEffect to make it reusable
   const loadGroups = async () => {
@@ -168,6 +238,14 @@ export function GroupProvider({ children }: { children: ReactNode }) {
       isLoadingGroups.current = true;
       lastGroupsLoadTime.current = now;
       console.log('Loading all groups');
+      
+      // Check if we have a stored group ID or URL parameter
+      const storedGroupId = typeof window !== 'undefined' ? localStorage.getItem('lastActiveGroupId') : null;
+      const isHandlingStoredOrUrlGroup = isFromUrlNavigation || storedGroupId;
+      
+      if (isHandlingStoredOrUrlGroup) {
+        console.log('Found stored or URL-based group ID, will prioritize this over default selection');
+      }
       
       // Use the dbService to get hierarchical groups
       let fetchedGroups = await dbService.getGroups();
@@ -194,14 +272,20 @@ export function GroupProvider({ children }: { children: ReactNode }) {
       // Update state only if component is still mounted
       setGroups(fetchedGroups);
       
-      // Set first top-level group as active if there are groups and no active group
-      if (fetchedGroups.length > 0 && !activeGroupId) {
+      // Only set a default active group if:
+      // 1. There are groups
+      // 2. No active group is currently set
+      // 3. We're not handling a URL parameter or stored group ID
+      if (fetchedGroups.length > 0 && !activeGroupId && !isHandlingStoredOrUrlGroup) {
+        console.log('Setting default active group (no URL param or stored ID detected)');
         const topLevelGroups = fetchedGroups.filter(g => !g.parentId);
         if (topLevelGroups.length > 0) {
           setActiveGroupId(topLevelGroups[0].id);
         } else {
           setActiveGroupId(fetchedGroups[0].id);
         }
+      } else if (isHandlingStoredOrUrlGroup) {
+        console.log('Skipping default active group selection due to URL or stored group ID');
       }
       
       console.log(`Loaded ${fetchedGroups.length} groups successfully`);
@@ -884,6 +968,7 @@ export function GroupProvider({ children }: { children: ReactNode }) {
     groups,
     activeGroupId,
     setActiveGroupId,
+    setActiveGroupIdFromUrl,
     addGroup,
     editGroup,
     deleteGroup,
@@ -910,6 +995,7 @@ export function GroupProvider({ children }: { children: ReactNode }) {
       groups,
       activeGroupId,
       setActiveGroupId,
+      setActiveGroupIdFromUrl,
       addGroup,
       editGroup,
       deleteGroup,

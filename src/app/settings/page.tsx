@@ -5,6 +5,7 @@ import { useRouter } from 'next/navigation';
 import Header from '../components/Header';
 import { useGroupContext } from '../context/GroupContext';
 import { useAPIKeyContext } from '../context/APIKeyContext';
+import { useLinkGroupContext } from '../context/LinkGroupContext';
 import { motion } from 'framer-motion';
 import * as dbService from '../services/dbService';
 import { Group } from '../types';
@@ -13,6 +14,7 @@ export default function SettingsPage() {
   const router = useRouter();
   const { groups } = useGroupContext();
   const { apiKeys } = useAPIKeyContext();
+  const { linkGroups } = useLinkGroupContext();
   
   // State for export options
   const [exportOptions, setExportOptions] = useState({
@@ -20,7 +22,8 @@ export default function SettingsPage() {
     sqliteSequence: true,
     groups: true,
     channels: true,
-    groupChannels: true
+    groupChannels: true,
+    linkGroups: true
   });
   
   // State for selected groups (initialize with all groups selected)
@@ -436,7 +439,7 @@ export default function SettingsPage() {
       // Show success message
       setImportStatus({
         type: 'success',
-        message: 'Data imported successfully. Refresh the page to see the changes.'
+        message: `Import successful! Imported ${result.data.apiKeys || 0} API keys, ${result.data.topLevelGroups || 0} top-level groups, ${result.data.subgroups || 0} subgroups, ${result.data.channels || 0} channels, ${result.data.linkGroups || 0} link groups, and ${result.data.links || 0} links.`
       });
       
       // Reload the page after a short delay
@@ -745,6 +748,16 @@ export default function SettingsPage() {
                       className="h-5 w-5 rounded border-gray-300 text-red-600 focus:ring-red-500"
                     />
                     <span className="text-gray-700 dark:text-gray-300">Group-Channel Relationships</span>
+                  </label>
+                  
+                  <label className="flex items-center space-x-3">
+                    <input
+                      type="checkbox"
+                      checked={exportOptions.linkGroups}
+                      onChange={() => toggleExportOption('linkGroups')}
+                      className="h-5 w-5 rounded border-gray-300 text-red-600 focus:ring-red-500"
+                    />
+                    <span className="text-gray-700 dark:text-gray-300">Link Groups</span>
                   </label>
                 </div>
               </div>

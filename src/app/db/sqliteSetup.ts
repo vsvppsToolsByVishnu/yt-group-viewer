@@ -81,6 +81,35 @@ export const initializeDatabase = async () => {
       expires_at INTEGER
     );
     
+    -- Link Groups tables
+    CREATE TABLE IF NOT EXISTS link_groups (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      parent_id TEXT,
+      is_expanded INTEGER DEFAULT 0,
+      created_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now') * 1000),
+      updated_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now') * 1000),
+      FOREIGN KEY (parent_id) REFERENCES link_groups(id) ON DELETE CASCADE
+    );
+    
+    CREATE TABLE IF NOT EXISTS links (
+      id TEXT PRIMARY KEY,
+      title TEXT NOT NULL,
+      url TEXT NOT NULL,
+      description TEXT,
+      icon TEXT,
+      created_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now') * 1000),
+      updated_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now') * 1000)
+    );
+    
+    CREATE TABLE IF NOT EXISTS link_group_links (
+      group_id TEXT,
+      link_id TEXT,
+      PRIMARY KEY (group_id, link_id),
+      FOREIGN KEY (group_id) REFERENCES link_groups(id) ON DELETE CASCADE,
+      FOREIGN KEY (link_id) REFERENCES links(id) ON DELETE CASCADE
+    );
+    
     -- Trigger to update the updated_at timestamp for groups
     CREATE TRIGGER IF NOT EXISTS update_groups_timestamp
     AFTER UPDATE ON groups

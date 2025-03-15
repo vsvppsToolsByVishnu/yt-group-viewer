@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useGroupContext } from '../context/GroupContext';
 import { useRouter } from 'next/navigation';
@@ -140,7 +140,15 @@ const GroupItem = ({
               onClick={(e) => {
                 e.preventDefault();
                 e.stopPropagation();
+                
+                // Set this group as active
                 setActiveGroupId(group.id);
+                
+                // If this group has subgroups and isn't expanded, expand it automatically
+                if (hasSubgroups && !group.isExpanded) {
+                  console.log(`Auto-expanding group ${group.name} because it was selected and has subgroups`);
+                  toggleSubgroupExpansion(group.id);
+                }
               }}
               type="button"
             >
@@ -247,7 +255,9 @@ export default function Sidebar() {
     setActiveGroupId,
     addGroup,
     editGroup,
-    deleteGroup
+    deleteGroup,
+    getSubgroups,
+    toggleSubgroupExpansion
   } = useGroupContext();
   
   const [isCollapsed, setIsCollapsed] = useState(false);
@@ -303,6 +313,53 @@ export default function Sidebar() {
     setParentForNewGroup(parentId);
     setShowNewGroupForm(true);
   };
+
+  // Auto-expand parent groups when a subgroup is active (especially important for URL navigation)
+  useEffect(() => {
+    if (!activeGroupId) return;
+    
+    // Search for the active group in all groups (including nested ones)
+    const findGroupInTree = (groups: Group[], targetId: string): {found: boolean, parentIds: string[]} => {
+      const parentIds: string[] = [];
+      
+      // Check top level groups
+      for (const group of groups) {
+        if (group.id === targetId) {
+          return { found: true, parentIds };
+        }
+        
+        // If group has subgroups, search them
+        const subgroups = getSubgroups(group.id);
+        if (subgroups && subgroups.length > 0) {
+          const result = findGroupInTree(subgroups, targetId);
+          if (result.found) {
+            // If found in subgroups, add this group as a parent
+            return { found: true, parentIds: [group.id, ...result.parentIds] };
+          }
+        }
+      }
+      
+      return { found: false, parentIds };
+    };
+    
+    // Find all parent groups that need to be expanded
+    const { found, parentIds } = findGroupInTree(topLevelGroups, activeGroupId);
+    
+    if (found && parentIds.length > 0) {
+      console.log(`Auto-expanding parent groups for ${activeGroupId}:`, parentIds);
+      
+      // Expand all parent groups
+      parentIds.forEach(parentId => {
+        const parent = topLevelGroups.find(g => g.id === parentId) || 
+                      topLevelGroups.flatMap(g => getSubgroups(g.id)).find(g => g.id === parentId);
+        
+        if (parent && !parent.isExpanded) {
+          console.log(`Expanding parent group: ${parent.name} (${parent.id})`);
+          toggleSubgroupExpansion(parent.id);
+        }
+      });
+    }
+  }, [activeGroupId, topLevelGroups, getSubgroups, toggleSubgroupExpansion]);
 
   return (
     <motion.div 

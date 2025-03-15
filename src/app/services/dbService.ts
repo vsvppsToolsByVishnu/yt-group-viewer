@@ -1,4 +1,4 @@
-import { Group, Channel, APIKey, Video } from '../types';
+import { Group, Channel, APIKey, Video, LinkGroup, Link } from '../types';
 
 // Base URL for API endpoints
 const API_BASE_URL = '/api/db';
@@ -130,6 +130,13 @@ async function fetchPost<T>(action: string, data: any = {}): Promise<T> {
     }
     
     const result = await response.json();
+    
+    // For saveLinkGroup, return the full response (not just data)
+    if (action === 'saveLinkGroup') {
+      return result as T;
+    }
+    
+    // For other actions, return just the data property as before
     return result.data;
   } catch (error) {
     console.error(`Error in fetchPost (${action}):`, error);
@@ -508,4 +515,109 @@ export const deleteVideosForChannel = async (channelId: string): Promise<void> =
 
 export const deleteChannel = async (channelId: string): Promise<void> => {
   await fetchPost('deleteChannel', { channelId });
+};
+
+// ==================== Link Groups ====================
+
+export const getLinkGroups = async (): Promise<LinkGroup[]> => {
+  console.log('[dbService] Getting all link groups');
+  const linkGroups = await fetchGet<LinkGroup[]>('getLinkGroups');
+  return linkGroups || [];
+};
+
+export const getLinkGroupHierarchy = async (): Promise<LinkGroup[]> => {
+  console.log('[dbService] Getting link group hierarchy');
+  const hierarchy = await fetchGet<LinkGroup[]>('getLinkGroupHierarchy');
+  return hierarchy || [];
+};
+
+export const getLinkGroup = async (id: string): Promise<LinkGroup | null> => {
+  console.log(`[dbService] Getting link group with ID: ${id}`);
+  if (!id) {
+    console.error('[dbService] Cannot get link group: Missing ID');
+    return null;
+  }
+  
+  const group = await fetchGet<LinkGroup | null>('getLinkGroup', { id });
+  return group;
+};
+
+export const getLinkGroupWithSubtree = async (id: string): Promise<LinkGroup | null> => {
+  console.log(`[dbService] Getting link group with subtree for ID: ${id}`);
+  if (!id) {
+    console.error('[dbService] Cannot get link group with subtree: Missing ID');
+    return null;
+  }
+  
+  const group = await fetchGet<LinkGroup | null>('getLinkGroupWithSubtree', { id });
+  return group;
+};
+
+export const saveLinkGroup = async (group: LinkGroup): Promise<string | null> => {
+  console.log(`[dbService] Saving link group: ${group.name} (${group.id || 'new'})`);
+  
+  try {
+    // Sanitize the group object to avoid circular references
+    const sanitizedGroup = {
+      ...group,
+      subgroups: group.subgroups?.map(subgroup => ({
+        ...subgroup,
+        subgroups: undefined // Don't send nested subgroups
+      }))
+    };
+    
+    type SaveLinkGroupResponse = {
+      success: boolean;
+      data?: {
+        id: string;
+      };
+      error?: string;
+    };
+    
+    const result = await fetchPost<SaveLinkGroupResponse>('saveLinkGroup', { group: sanitizedGroup });
+    
+    if (result && result.success && result.data && result.data.id) {
+      console.log(`[dbService] Link group saved successfully with ID: ${result.data.id}`);
+      return result.data.id;
+    } else {
+      console.error('[dbService] Failed to save link group: No ID returned', result);
+      return null;
+    }
+  } catch (error) {
+    console.error('[dbService] Error saving link group:', error);
+    return null;
+  }
+};
+
+export const deleteLinkFromGroup = async (groupId: string, linkId: string): Promise<boolean> => {
+  console.log(`[dbService] Explicitly deleting link ${linkId} from group ${groupId}`);
+  if (!groupId || !linkId) {
+    console.error('[dbService] Cannot delete link: Missing groupId or linkId');
+    return false;
+  }
+  
+  try {
+    // Delete the link through the API
+    const result = await fetchPost<{ success: boolean }>('deleteLinkFromGroup', { groupId, linkId });
+    return result?.success || false;
+  } catch (error) {
+    console.error(`[dbService] Error explicitly deleting link ${linkId} from group ${groupId}:`, error);
+    return false;
+  }
+};
+
+export const deleteLinkGroup = async (id: string): Promise<boolean> => {
+  console.log(`[dbService] Deleting link group with ID: ${id}`);
+  if (!id) {
+    console.error('[dbService] Cannot delete link group: Missing ID');
+    return false;
+  }
+  
+  try {
+    const result = await fetchPost<{ success: boolean }>('deleteLinkGroup', { id });
+    return result?.success || false;
+  } catch (error) {
+    console.error(`[dbService] Error deleting link group with ID ${id}:`, error);
+    return false;
+  }
 }; 

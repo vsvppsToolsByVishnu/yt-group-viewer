@@ -42,4 +42,28 @@ export interface APIKey {
 
 // Filter types
 export type FilterOption = 'latest' | '3days' | '7days' | 'all';
-export type SortOption = 'date' | 'views'; 
+export type SortOption = 'date' | 'views';
+
+// Link types
+export interface Link {
+  id: string;
+  title: string;
+  url: string;
+  description?: string;
+  icon?: string;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface LinkGroup {
+  id: string;
+  name: string;
+  links: Link[];
+  parentId?: string; // Optional parent group id for subgroups
+  subgroups?: LinkGroup[]; // Optional array of subgroups
+  isExpanded?: boolean; // Whether the subgroups are expanded/visible
+  subgroupCount?: number; // Number of direct subgroups
+  linkCount?: number; // Number of links in this group
+  createdAt?: number; // Creation timestamp
+  updatedAt?: number; // Last update timestamp
+} 

@@ -1,7 +1,7 @@
 "use client";
 
-import { useState } from "react";
-import { useRouter } from 'next/navigation';
+import { useState, useEffect, useRef } from "react";
+import { useRouter, useSearchParams } from 'next/navigation';
 import Link from 'next/link';
 import Header from "./components/Header";
 import Sidebar from "./components/Sidebar";
@@ -16,10 +16,100 @@ type SortOption = 'date' | 'views';
 
 export default function Home() {
   const router = useRouter();
-  const { activeGroupId } = useGroupContext();
+  const searchParams = useSearchParams();
+  const { activeGroupId, setActiveGroupId, setActiveGroupIdFromUrl } = useGroupContext();
   const [filterOption, setFilterOption] = useState<FilterOption>('latest');
   const [sortOption, setSortOption] = useState<SortOption>('date');
   const [showCacheCleared, setShowCacheCleared] = useState(false);
+  
+  // Track the previous URL parameter to prevent loops
+  const [previousUrlGroupId, setPreviousUrlGroupId] = useState<string | null>(null);
+  
+  // Add a ref to track initial mount
+  const isInitialMount = useRef(true);
+  
+  // Handle URL parameter for active group - prioritize on initial render and manual URL changes
+  useEffect(() => {
+    const groupId = searchParams.get('groupId');
+    
+    if (groupId) {
+      // On initial mount or page refresh, always set from URL
+      if (isInitialMount.current) {
+        console.log(`Home (initial): Setting active group from URL: ${groupId}`);
+        setActiveGroupIdFromUrl(groupId);
+        setPreviousUrlGroupId(groupId);
+        isInitialMount.current = false;
+        
+        // Store the group ID in localStorage to ensure it persists across refreshes
+        localStorage.setItem('lastActiveGroupId', groupId);
+        
+        // Access the internal GroupContext ref to signal we've processed the URL parameter
+        const groupContextElement = document.getElementById('group-context-debug');
+        if (groupContextElement) {
+          groupContextElement.dispatchEvent(new CustomEvent('url-processed'));
+        }
+        return;
+      }
+      
+      // On subsequent URL changes, only update if it doesn't match the active group
+      // and isn't the result of our own URL update
+      if (groupId !== activeGroupId && groupId !== previousUrlGroupId) {
+        console.log(`Home: Setting active group from URL: ${groupId}`);
+        setActiveGroupIdFromUrl(groupId);
+        setPreviousUrlGroupId(groupId);
+        
+        // Store the group ID in localStorage to ensure it persists across refreshes
+        localStorage.setItem('lastActiveGroupId', groupId);
+      }
+    } else {
+      // If no groupId in URL on initial mount, check if we have a stored groupId
+      if (isInitialMount.current) {
+        const storedGroupId = localStorage.getItem('lastActiveGroupId');
+        if (storedGroupId) {
+          console.log(`Home (initial): Restoring group from localStorage: ${storedGroupId}`);
+          setActiveGroupIdFromUrl(storedGroupId);
+          setPreviousUrlGroupId(storedGroupId);
+          
+          // Update the URL to match the stored group
+          const params = new URLSearchParams();
+          params.set('groupId', storedGroupId);
+          router.replace(`/?${params.toString()}`, { scroll: false });
+        }
+        
+        isInitialMount.current = false;
+        
+        // Signal that no URL parameter was found, so GroupContext can use default if needed
+        const groupContextElement = document.getElementById('group-context-debug');
+        if (groupContextElement) {
+          groupContextElement.dispatchEvent(new CustomEvent('no-url-parameter'));
+        }
+      }
+    }
+  }, [searchParams, activeGroupId, previousUrlGroupId, setActiveGroupId, setActiveGroupIdFromUrl, router]);
+
+  // Update URL when active group changes - but only through user interaction, not URL-triggered changes
+  useEffect(() => {
+    // Skip the effect on initial render or if initialized by a URL change
+    if (isInitialMount.current || activeGroupId === previousUrlGroupId) return;
+    
+    // Only update URL if active group is actually different from URL
+    const currentUrlGroupId = searchParams.get('groupId');
+    if (activeGroupId !== currentUrlGroupId) {
+      console.log(`Home: Updating URL for active group: ${activeGroupId}`);
+      
+      // Remember this URL change so we don't react to it in the other effect
+      setPreviousUrlGroupId(activeGroupId);
+      
+      // Update the URL softly without a full navigation
+      if (activeGroupId) {
+        const params = new URLSearchParams(searchParams.toString());
+        params.set('groupId', activeGroupId);
+        router.replace(`/?${params.toString()}`, { scroll: false });
+      } else {
+        router.replace('/', { scroll: false });
+      }
+    }
+  }, [activeGroupId, router, searchParams, previousUrlGroupId]);
 
   const handleFilterChange = (filter: FilterOption) => {
     setFilterOption(filter);

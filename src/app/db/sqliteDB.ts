@@ -1,5 +1,8 @@
 import { getDbConnection } from './sqliteSetup';
-import { Group, Channel, APIKey, Video } from '../types';
+import { Group, Channel, APIKey, Video, LinkGroup, Link } from '../types';
+
+// Get the database connection
+const db = getDbConnection();
 
 // ==================== Groups ====================
 
@@ -832,6 +835,460 @@ export const deleteChannel = async (channelId: string): Promise<void> => {
     // Rollback on error
     await db.run('ROLLBACK');
     console.error(`Error deleting channel ${channelId}:`, error);
+    throw error;
+  }
+};
+
+// Link Groups
+export const getLinkGroups = async (): Promise<LinkGroup[]> => {
+  console.log('[sqliteDB] Getting all link groups');
+  const db = await getDbConnection();
+  
+  try {
+    // Get all link groups
+    const linkGroups = await db.all('SELECT * FROM link_groups ORDER BY name');
+    console.log(`[sqliteDB] Retrieved ${linkGroups.length} link groups from database`);
+    
+    // Get all links for each group
+    const result: LinkGroup[] = [];
+    for (const group of linkGroups) {
+      const links = await db.all(`
+        SELECT l.* FROM links l
+        JOIN link_group_links gl ON l.id = gl.link_id
+        WHERE gl.group_id = ?
+      `, [group.id]);
+      
+      const linkGroup: LinkGroup = {
+        id: group.id,
+        name: group.name,
+        parentId: group.parent_id,
+        isExpanded: group.is_expanded === 1,
+        links: links.map((link: any) => ({
+          id: link.id,
+          title: link.title,
+          url: link.url,
+          description: link.description,
+          icon: link.icon,
+          createdAt: link.created_at,
+          updatedAt: link.updated_at
+        })),
+        createdAt: group.created_at,
+        updatedAt: group.updated_at
+      };
+      
+      result.push(linkGroup);
+    }
+    
+    console.log(`[sqliteDB] Processed ${result.length} link groups with their links`);
+    return result;
+  } catch (error) {
+    console.error('[sqliteDB] Error getting link groups:', error);
+    return [];
+  }
+};
+
+export const getLinkGroup = async (id: string): Promise<LinkGroup | null> => {
+  console.log(`[sqliteDB] Getting link group with ID: ${id}`);
+  const db = await getDbConnection();
+  
+  try {
+    // Get the group
+    const group = await db.get('SELECT * FROM link_groups WHERE id = ?', [id]);
+    
+    if (!group) {
+      console.log(`[sqliteDB] Link group with ID ${id} not found`);
+      return null;
+    }
+    
+    // Get links for the group
+    const links = await db.all(`
+      SELECT l.* FROM links l
+      JOIN link_group_links gl ON l.id = gl.link_id
+      WHERE gl.group_id = ?
+    `, [id]);
+    
+    // Convert snake_case to camelCase
+    const linkGroup: LinkGroup = {
+      id: group.id,
+      name: group.name,
+      parentId: group.parent_id,
+      isExpanded: group.is_expanded === 1,
+      links: links.map((link: any) => ({
+        ...link,
+        createdAt: link.created_at,
+        updatedAt: link.updated_at
+      })),
+      createdAt: group.created_at,
+      updatedAt: group.updated_at
+    };
+    
+    return linkGroup;
+  } catch (error) {
+    console.error(`[sqliteDB] Error getting link group with ID ${id}:`, error);
+    return null;
+  }
+};
+
+export const saveLinkGroup = async (group: LinkGroup): Promise<string> => {
+  console.log(`[sqliteDB] Saving link group: ${group.name} (${group.id || 'new'})`);
+  const db = await getDbConnection();
+  
+  let transaction = null;
+  try {
+    // Start a transaction
+    transaction = await db.run('BEGIN TRANSACTION');
+    
+    const now = Date.now();
+    const groupId = group.id || `lg_${now}_${Math.random().toString(36).substring(2, 9)}`;
+    
+    // Check if this is a top-level group or a subgroup
+    if (group.parentId) {
+      console.log(`[sqliteDB] This is a subgroup with parent ID: ${group.parentId}`);
+      
+      // Verify parent exists
+      const parentExists = await db.get('SELECT id FROM link_groups WHERE id = ?', [group.parentId]);
+      if (!parentExists) {
+        console.warn(`[sqliteDB] Parent group ${group.parentId} does not exist, treating as top-level group`);
+        group.parentId = undefined;
+      }
+    } else {
+      console.log('[sqliteDB] This is a top-level group');
+    }
+    
+    // Check if the group already exists
+    const existingGroup = await db.get('SELECT * FROM link_groups WHERE id = ?', [groupId]);
+    
+    if (existingGroup) {
+      console.log(`[sqliteDB] Updating existing link group: ${groupId}`);
+      
+      // Update the group
+      await db.run(`
+        UPDATE link_groups
+        SET name = ?, parent_id = ?, is_expanded = ?, updated_at = ?
+        WHERE id = ?
+      `, [
+        group.name,
+        group.parentId || null,
+        group.isExpanded ? 1 : 0,
+        now,
+        groupId
+      ]);
+    } else {
+      console.log(`[sqliteDB] Creating new link group: ${groupId}`);
+      
+      // Insert the new group
+      await db.run(`
+        INSERT INTO link_groups (id, name, parent_id, is_expanded, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?)
+      `, [
+        groupId,
+        group.name,
+        group.parentId || null,
+        group.isExpanded ? 1 : 0,
+        now,
+        now
+      ]);
+    }
+    
+    // Handle links
+    if (group.links && group.links.length > 0) {
+      console.log(`[sqliteDB] Processing ${group.links.length} links for group ${groupId}`);
+      
+      // Delete existing link associations
+      await db.run('DELETE FROM link_group_links WHERE group_id = ?', [groupId]);
+      
+      // Insert or update each link
+      for (const link of group.links) {
+        const linkId = link.id || `link_${now}_${Math.random().toString(36).substring(2, 9)}`;
+        
+        // Check if the link already exists
+        const existingLink = await db.get('SELECT id FROM links WHERE id = ?', [linkId]);
+        
+        if (existingLink) {
+          console.log(`[sqliteDB] Updating existing link: ${linkId}`);
+          
+          // Update the link
+          await db.run(`
+            UPDATE links
+            SET title = ?, url = ?, description = ?, icon = ?, updated_at = ?
+            WHERE id = ?
+          `, [
+            link.title,
+            link.url,
+            link.description || null,
+            link.icon || null,
+            now,
+            linkId
+          ]);
+        } else {
+          console.log(`[sqliteDB] Creating new link: ${linkId}`);
+          
+          // Insert the new link
+          await db.run(`
+            INSERT INTO links (id, title, url, description, icon, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+          `, [
+            linkId,
+            link.title,
+            link.url,
+            link.description || null,
+            link.icon || null,
+            now,
+            now
+          ]);
+        }
+        
+        // Create the association between the group and the link
+        await db.run(`
+          INSERT INTO link_group_links (group_id, link_id)
+          VALUES (?, ?)
+        `, [groupId, linkId]);
+      }
+    }
+    
+    // Handle subgroups if they exist
+    if (group.subgroups && group.subgroups.length > 0) {
+      console.log(`[sqliteDB] Processing ${group.subgroups.length} subgroups for group ${groupId}`);
+      
+      for (const subgroup of group.subgroups) {
+        // Set the parent ID to this group
+        subgroup.parentId = groupId;
+        
+        // Recursively save the subgroup
+        await saveLinkGroup(subgroup);
+      }
+    }
+    
+    // Commit the transaction
+    await db.run('COMMIT');
+    console.log(`[sqliteDB] Link group saved successfully: ${groupId}`);
+    
+    // Verify the save
+    const savedGroup = await getLinkGroup(groupId);
+    if (!savedGroup) {
+      throw new Error(`Failed to verify saved group: ${groupId}`);
+    }
+    
+    return groupId;
+  } catch (error) {
+    // Rollback the transaction if there was an error
+    if (transaction) {
+      try {
+        await db.run('ROLLBACK');
+        console.log('[sqliteDB] Transaction rolled back due to error');
+      } catch (rollbackError) {
+        console.error('[sqliteDB] Error rolling back transaction:', rollbackError);
+      }
+    }
+    
+    console.error('[sqliteDB] Error saving link group:', error);
+    throw error;
+  }
+};
+
+export const deleteLinkGroup = async (id: string): Promise<void> => {
+  console.log(`[sqliteDB] Deleting link group with ID: ${id}`);
+  const db = await getDbConnection();
+  
+  let transaction = null;
+  try {
+    // Start a transaction
+    transaction = await db.run('BEGIN TRANSACTION');
+    
+    // Get all subgroups recursively
+    const getAllSubgroupIds = async (groupId: string): Promise<string[]> => {
+      const subgroups = await db.all('SELECT id FROM link_groups WHERE parent_id = ?', [groupId]);
+      let ids = [groupId];
+      
+      for (const subgroup of subgroups) {
+        const subgroupIds = await getAllSubgroupIds(subgroup.id);
+        ids = [...ids, ...subgroupIds];
+      }
+      
+      return ids;
+    };
+    
+    // Get all group IDs to delete (the specified group and all its subgroups)
+    const groupIds = await getAllSubgroupIds(id);
+    console.log(`[sqliteDB] Deleting link group ${id} and ${groupIds.length - 1} subgroups`);
+    
+    // For each group, first handle the links and then delete the group
+    for (const groupId of groupIds) {
+      // First get all links associated with this group
+      const links = await db.all('SELECT link_id FROM link_group_links WHERE group_id = ?', [groupId]);
+      const linkIds = links.map((l: { link_id: string }) => l.link_id);
+      
+      // Delete the link associations from the link_group_links table
+      await db.run('DELETE FROM link_group_links WHERE group_id = ?', [groupId]);
+      console.log(`[sqliteDB] Deleted all link associations for group ${groupId}`);
+      
+      // Check for orphaned links and delete them
+      for (const linkId of linkIds) {
+        const linkAssociations = await db.get(
+          'SELECT COUNT(*) as count FROM link_group_links WHERE link_id = ?',
+          [linkId]
+        );
+        
+        // If the link is not associated with any other groups, delete it from the links table
+        if (linkAssociations.count === 0) {
+          await db.run('DELETE FROM links WHERE id = ?', [linkId]);
+          console.log(`[sqliteDB] Deleted orphaned link ${linkId}`);
+        }
+      }
+      
+      // Delete the group itself
+      await db.run('DELETE FROM link_groups WHERE id = ?', [groupId]);
+      console.log(`[sqliteDB] Deleted group ${groupId}`);
+    }
+    
+    // Commit the transaction
+    await db.run('COMMIT');
+    console.log(`[sqliteDB] Successfully deleted link group ${id} with all subgroups and links`);
+  } catch (error) {
+    // Rollback the transaction in case of error
+    if (transaction) {
+      try {
+        await db.run('ROLLBACK');
+        console.log('[sqliteDB] Transaction rolled back due to error');
+      } catch (rollbackError) {
+        console.error('[sqliteDB] Error rolling back transaction:', rollbackError);
+      }
+    }
+    console.error('[sqliteDB] Error deleting link group:', error);
+    throw error;
+  }
+};
+
+export const getLinkGroupHierarchy = async (): Promise<LinkGroup[]> => {
+  console.log('[sqliteDB] Getting link group hierarchy');
+  const db = await getDbConnection();
+  
+  try {
+    // Get all groups
+    const allGroups = await getLinkGroups();
+    console.log(`[sqliteDB] Retrieved ${allGroups.length} link groups for hierarchy:`);
+    allGroups.forEach(group => {
+      console.log(`- Group: ${group.name} (${group.id}), parentId: ${group.parentId || 'none'}`);
+    });
+    
+    // Create a map of groups by ID for quick lookup
+    const groupMap = new Map<string, LinkGroup>();
+    allGroups.forEach(group => {
+      group.subgroups = [];
+      groupMap.set(group.id, group);
+    });
+    
+    // Organize into hierarchy
+    const topLevelGroups: LinkGroup[] = [];
+    
+    allGroups.forEach(group => {
+      if (group.parentId && groupMap.has(group.parentId)) {
+        // This is a subgroup, add it to its parent
+        const parent = groupMap.get(group.parentId)!;
+        console.log(`[sqliteDB] Adding ${group.name} as a subgroup of ${parent.name}`);
+        parent.subgroups!.push(group);
+      } else {
+        // This is a top-level group
+        if (group.parentId) {
+          console.warn(`[sqliteDB] Group ${group.name} has parent ID ${group.parentId}, but parent not found. Adding as top-level.`);
+        }
+        topLevelGroups.push(group);
+      }
+    });
+    
+    // Log the hierarchy
+    console.log(`[sqliteDB] Built hierarchy with ${topLevelGroups.length} top-level groups`);
+    const logHierarchy = (groups: LinkGroup[], level = 0): void => {
+      const indent = ' '.repeat(level * 2);
+      groups.forEach(group => {
+        console.log(`${indent}- ${group.name} (${group.subgroups?.length || 0} subgroups)`);
+        if (group.subgroups && group.subgroups.length > 0) {
+          logHierarchy(group.subgroups, level + 1);
+        }
+      });
+    };
+    logHierarchy(topLevelGroups);
+    
+    // Sort groups by name
+    const sortGroups = (groups: LinkGroup[]) => {
+      groups.sort((a, b) => a.name.localeCompare(b.name));
+      groups.forEach(group => {
+        if (group.subgroups && group.subgroups.length > 0) {
+          sortGroups(group.subgroups);
+        }
+      });
+    };
+    
+    sortGroups(topLevelGroups);
+    
+    return topLevelGroups;
+  } catch (error) {
+    console.error('[sqliteDB] Error getting link group hierarchy:', error);
+    return [];
+  }
+};
+
+export const getLinkGroupWithSubtree = async (id: string): Promise<LinkGroup | null> => {
+  console.log(`[sqliteDB] Getting link group with subtree for ID: ${id}`);
+  const db = await getDbConnection();
+  
+  try {
+    // Get the root group
+    const rootGroup = await getLinkGroup(id);
+    if (!rootGroup) {
+      return null;
+    }
+    
+    // Function to recursively get subgroups
+    const getSubgroups = async (groupId: string): Promise<LinkGroup[]> => {
+      const subgroups = await db.all('SELECT id FROM link_groups WHERE parent_id = ?', [groupId]);
+      const result: LinkGroup[] = [];
+      
+      for (const subgroup of subgroups) {
+        const group = await getLinkGroup(subgroup.id);
+        if (group) {
+          group.subgroups = await getSubgroups(group.id);
+          result.push(group);
+        }
+      }
+      
+      return result;
+    };
+    
+    // Get all subgroups
+    rootGroup.subgroups = await getSubgroups(id);
+    
+    return rootGroup;
+  } catch (error) {
+    console.error(`[sqliteDB] Error getting link group with subtree for ID ${id}:`, error);
+    return null;
+  }
+};
+
+export const deleteLinkFromGroup = async (groupId: string, linkId: string): Promise<void> => {
+  console.log(`[sqliteDB] Explicitly deleting link ${linkId} from group ${groupId}`);
+  const db = await getDbConnection();
+  
+  try {
+    // Delete the link association from the link_group_links table
+    await db.run('DELETE FROM link_group_links WHERE group_id = ? AND link_id = ?', [groupId, linkId]);
+    console.log(`[sqliteDB] Removed link ${linkId} association from group ${groupId}`);
+    
+    // Check if the link is associated with any other groups
+    const linkAssociations = await db.get(
+      'SELECT COUNT(*) as count FROM link_group_links WHERE link_id = ?',
+      [linkId]
+    );
+    
+    // If the link is not associated with any other groups, delete it from the links table
+    if (linkAssociations.count === 0) {
+      await db.run('DELETE FROM links WHERE id = ?', [linkId]);
+      console.log(`[sqliteDB] Link ${linkId} is now orphaned, deleted from links table`);
+    } else {
+      console.log(`[sqliteDB] Link ${linkId} is still associated with other groups, not deleted from links table`);
+    }
+  } catch (error) {
+    console.error(`[sqliteDB] Error explicitly deleting link ${linkId}:`, error);
     throw error;
   }
 };

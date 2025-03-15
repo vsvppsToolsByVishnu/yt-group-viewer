@@ -206,6 +206,42 @@ export async function POST(request: NextRequest) {
       channels: exportData.channels?.length || 0,
       groupChannels: exportData.groupChannels?.length || 0
     });
+
+    // Export link groups if available
+    try {
+      console.log('Exporting link groups...');
+      const linkGroups = await sqliteDB.getLinkGroups();
+      
+      if (linkGroups && linkGroups.length > 0) {
+        // Get the full hierarchy with all links
+        const linkGroupHierarchy = await sqliteDB.getLinkGroupHierarchy();
+        
+        // Log the link group structure being exported
+        console.log(`Exporting ${linkGroupHierarchy.length} top-level link groups`);
+        
+        // Count total links being exported
+        let totalLinks = 0;
+        const countLinks = (groups: any[]) => {
+          groups.forEach(group => {
+            totalLinks += group.links?.length || 0;
+            if (group.subgroups && group.subgroups.length > 0) {
+              countLinks(group.subgroups);
+            }
+          });
+        };
+        
+        countLinks(linkGroupHierarchy);
+        console.log(`Total links being exported: ${totalLinks}`);
+        
+        // Add to the export data
+        exportData.linkGroups = linkGroupHierarchy;
+      } else {
+        console.log('No link groups found to export');
+      }
+    } catch (error) {
+      console.error('Error exporting link groups:', error);
+      // Don't fail the whole export if link groups can't be exported
+    }
     
     return NextResponse.json({ 
       success: true, 
